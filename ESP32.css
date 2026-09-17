@@ -1,0 +1,128 @@
+// Includes the TFT_eSPI library, giving us pre-written functions to control the display
+#include <TFT_eSPI.h>
+
+// Instantiates 'tft', which acts as our display controller object
+TFT_eSPI tft = TFT_eSPI();
+
+// Creates two UI button objects provided by the TFT_eSPI library
+TFT_eSPI_Button plusBtn;
+TFT_eSPI_Button minusBtn; 
+
+// Hardware pin for controlling the screen backlight LED (3.3V power gate)
+#define BACKLIGHT_PIN 27
+
+// Hardware pin for an optional physical toggle button
+const int buttonPin = 2;
+
+// Variables to store incoming values parsed from Serial
+float CO2Value = 0.0;
+float Val = 0.0; 
+
+// Track previous values to prevent constant, flickering redraws
+float lastVal = -1.0;
+float lastCO2Value = -1.0;
+
+void setup() {
+  // Configures pin directions for physical hardware
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // Turns on the backlight LED so the screen content is visible
+  digitalWrite(BACKLIGHT_PIN, HIGH);
+
+  // Initializes UART serial communication at 115200 baud to match the Pi's script
+  Serial.begin(115200);
+
+  // Wakes up the display driver chip and initializes internal hardware registers
+  tft.init(); 
+
+  // Sets landscape orientation (Values: 0=Portrait, 1=Landscape, 2=Inv. Portrait, 3=Inv. Landscape)
+  tft.setRotation(1);
+
+  // Clears screen with a black background
+  tft.fillScreen(TFT_BLACK);
+
+  // Initializes and draws the "+" button: (tft, x, y, width, height, outline_color, fill_color, text_color, label, text_size)
+  plusBtn.initButton(&tft, 80, 140, 110, 60, TFT_WHITE, TFT_BLUE, TFT_WHITE, (char*)"+", 2);
+  plusBtn.drawButton(true);
+
+  // Initializes and draws the "-" button
+  minusBtn.initButton(&tft, 240, 140, 110, 60, TFT_WHITE, TFT_BLUE, TFT_WHITE, (char*)"-", 2);
+  minusBtn.drawButton(true);
+}
+
+void loop() {
+  // Variables to hold raw X and Y touch coordinates (uint16_t stores positive values 0–65535)
+  uint16_t x = 0, y = 0;
+
+  // --- 1. SERIAL COMMUNICATION INPUT ---
+  // Reads incoming serial data sent from the Raspberry Pi over UART
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim(); // Removes invisible carriage returns or spaces
+
+    // Parses fan speed message (Format from Pi: "FAN:50")
+    if (line.startsWith("FAN:")) {
+      String fanValue = line.substring(4);
+      Val = fanValue.toFloat();
+    }
+    
+    // Parses CO2 message (Format from Pi: "CO2:400")
+    if (line.startsWith("CO2:")) {
+      String co2Str = line.substring(4);
+      CO2Value = co2Str.toFloat();
+    }
+  }
+
+  // --- 2. DISPLAY REDRAW LOGIC ---
+  // Only redraws the Fan Speed text if the value has actually changed
+  if (Val != lastVal) {
+    // Clears old text area using a filled rectangle to stop letters/numbers overlapping
+    tft.fillRect(60, 10, 200, 30, TFT_BLACK); 
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(60, 10);
+    tft.print("Fan Speed: ");
+    tft.print(Val);
+    tft.print("%");
+    
+    // Update reference value to prevent unnecessary re-renders next loop
+    lastVal = Val; 
+  }
+
+  // Only redraws CO2 reading if a new sensor value was parsed
+  if (CO2Value != lastCO2Value) {
+    // Clears old CO2 text bounding box
+    tft.fillRect(20, 190, 250, 30, TFT_BLACK); 
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(20, 190);
+    tft.print("CO2 Level: ");
+    tft.print(CO2Value);
+    tft.print(" ppm");
+    
+    // Update reference value
+    lastCO2Value = CO2Value;
+  }
+
+
+  // Polls the touch controller; returns true if touched and writes position to x, y
+  bool touched = tft.getTouch(&x, &y);
+
+  // Updates press state for BOTH buttons by passing screen touch coordinates
+  plusBtn.press(touched && plusBtn.contains(x, y)); 
+  minusBtn.press(touched && minusBtn.contains(x, y)); 
+
+  // Triggers action when Plus button transitions from unpressed to pressed
+  if (plusBtn.justPressed()) {
+    Serial.println("UP"); // Transmits command to Raspberry Pi to increase duty cycle
+  }
+
+  // Triggers action when Minus button transitions from unpressed to pressed
+  if (minusBtn.justPressed()) {
+    Serial.println("DOWN"); // Transmits command to Raspberry Pi to decrease duty cycle
+  }
+
+  // Short delay to debounces rapid taps and lower processing overhead
+  delay(20);
+}
